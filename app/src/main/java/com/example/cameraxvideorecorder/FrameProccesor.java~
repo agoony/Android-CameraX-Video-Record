@@ -1,0 +1,247 @@
+package com.example.cameraxvideorecorder;
+
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.database.Cursor;
+import android.graphics.PixelFormat;
+import android.media.Image;
+import android.media.ImageReader;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.net.Uri;
+import android.provider.MediaStore;
+import android.util.Log;
+import android.view.Surface;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+/**
+ * Clase que procesa los frames de video y calcula su hash.
+ */
+public class FrameProccesor {
+
+    private boolean isRecording;
+    private Context context;
+
+    // MediaCodec y Surface para la grabación de video
+    private MediaCodec mediaCodec;
+    private Surface inputSurface;
+    private ImageReader imageReader;
+
+    // Variables para el hash encadenado
+    private String currentHash = "hardcoded_initial_hash"; // Hardcoded initial hash
+    private int frameCounter = 0;
+
+    /**
+     * Constructor de la clase.
+     *
+     * @param context Contexto de la aplicación.
+     */
+    public FrameProccesor(Context context) {
+        this.context = context;
+    }
+
+    /**
+     * Configura el MediaCodec para la grabación de video.
+     *
+     * @param width     Ancho del video.
+     * @param height    Alto del video.
+     * @param frameRate Tasa de frames del video.
+     */
+    @SuppressLint("WrongConstant")
+    public void setupMediaCodec(int width, int height, int frameRate) {
+        try {
+            // Configurar el MediaCodec para grabación de video
+            mediaCodec = MediaCodec.createEncoderByType("video/avc");
+
+            MediaFormat format = MediaFormat.createVideoFormat("video/avc", width, height);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 1000000);
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+
+            mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            inputSurface = mediaCodec.createInputSurface();
+            mediaCodec.start();
+
+            // Configurar ImageReader para recibir frames y procesarlos
+            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 10);
+            imageReader.setOnImageAvailableListener(reader -> {
+                Image image = reader.acquireLatestImage();
+                if (image != null) {
+                    processFrame(image);  // Modificar frame (hash, overlay, etc.)
+                    image.close();
+                }
+            }, null);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Procesa un frame de video y calcula su hash encadenado.
+     *
+     * @param image Frame de video.
+     */
+    private void processFrame(Image image) {
+        if (image == null) return;
+
+        // Convertir el frame a un ByteBuffer
+        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+        byte[] frameData = new byte[buffer.remaining()];
+        buffer.get(frameData);
+
+        // Incrementar contador de frames
+        frameCounter++;
+
+        // Cada 5 frames, generar nuevo hash
+        if (frameCounter % 5 == 0) {
+            // Generar hash del frame actual
+            String frameHash = generateHash(new String(frameData));
+
+            // Generar hash encadenado
+            String chainedHash = generateHash(currentHash + frameHash);
+
+            // Actualizar el hash actual
+            currentHash = chainedHash;
+
+            // Log para debugging
+            Log.d("FrameHash", "Frame " + frameCounter + ": " + chainedHash);
+        }
+
+        image.close();
+    }
+
+    /**
+     * Genera un hash SHA-256 a partir de una cadena de texto.
+     *
+     * @param input Cadena de texto.
+     * @return Hash SHA-256.
+     */
+    private String generateHash(String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(input.getBytes());
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    /**
+     * Obtiene el hash actual.
+     *
+     * @return Hash actual.
+     */
+    public String getCurrentHash() {
+        return currentHash;
+    }
+
+    /**
+     * Reinicia la cadena de hashes.
+     */
+    public void resetHashChain() {
+        currentHash = "hardcoded_initial_hash";
+        frameCounter = 0;
+    }
+
+    /**
+     * Obtiene la ruta real de un URI.
+     *
+     * @param contentUri URI.
+     * @return Ruta real.
+     */
+    private String getRealPathFromURI(Uri contentUri) {
+        String[] proj = {MediaStore.Video.Media.DATA};
+        Cursor cursor = context.getContentResolver().query(contentUri, proj, null, null, null);
+        if (cursor == null) return null;
+
+        int column_index = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA);
+        cursor.moveToFirst();
+        String path = cursor.getString(column_index);
+        cursor.close();
+        return path;
+    }
+
+    /**
+     * Obtiene el hash de un archivo.
+     *
+     * @param filePath Ruta del archivo.
+     * @return Hash del archivo.
+     */
+    private String getHashFromFile(String filePath) {
+        try {
+            File file = new File(filePath);
+            FileInputStream fis = new FileInputStream(file);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+
+            byte[] byteArray = new byte[1024];
+            int bytesRead;
+            while ((bytesRead = fis.read(byteArray)) != -1) {
+                digest.update(byteArray, 0, bytesRead);
+            }
+            fis.close();
+
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : digest.digest()) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    /**
+     * Detiene la extracción de frames.
+     */
+    public void stopFrameExtraction() {
+        isRecording = false;
+    }
+
+    /**
+     * Obtiene el estado de grabación.
+     *
+     * @return True si se está grabando, false en caso contrario.
+     */
+    public boolean isRecording() {
+        return isRecording;
+    }
+
+    /**
+     * Establece el estado de grabación.
+     *
+     * @param recording True para grabar, false para detener.
+     */
+    public void setRecording(boolean recording) {
+        isRecording = recording;
+    }
+
+    /**
+     * Establece el procesador de frames.
+     *
+     * @param frameProcessor Procesador de frames.
+     */
+    public void setFrameProcessor(FrameProccesor.FrameProcessor frameProcessor) {
+    }
+
+    /**
+     * Interfaz para el procesador de frames.
+     */
+    public interface FrameProcessor {
+        void processFrame(Image image);
+    }
+}
