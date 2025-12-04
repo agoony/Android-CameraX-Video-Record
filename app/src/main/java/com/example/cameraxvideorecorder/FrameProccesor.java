@@ -76,7 +76,7 @@ public class FrameProccesor {
                 Image image = reader.acquireLatestImage();
                 if (image != null) {
                     processFrame(image);  // Modificar frame (hash, overlay, etc.)
-                    image.close();
+                    // Do not close here; the caller managing ImageProxy should close it.
                 }
             }, null);
 
@@ -93,7 +93,7 @@ public class FrameProccesor {
     protected void processFrame(Image image) {
         if (image == null) return;
 
-        // Convertir el frame a un ByteBuffer
+        // Convertir el frame a un ByteBuffer (usar el primer plano)
         ByteBuffer buffer = image.getPlanes()[0].getBuffer();
         byte[] frameData = new byte[buffer.remaining()];
         buffer.get(frameData);
@@ -103,8 +103,8 @@ public class FrameProccesor {
 
         // Cada 5 frames, generar nuevo hash
         if (frameCounter % 5 == 0) {
-            // Generar hash del frame actual
-            String frameHash = generateHash(new String(frameData));
+            // Generar hash del frame actual (bytes crudos)
+            String frameHash = generateHash(frameData);
 
             // Generar hash encadenado
             String chainedHash = generateHash(currentHash + frameHash);
@@ -116,7 +116,7 @@ public class FrameProccesor {
             Log.d("FrameHash", "Frame " + frameCounter + ": " + chainedHash);
         }
 
-        image.close();
+        // No cerrar aquí; el ciclo de vida del Image lo maneja quien lo obtuvo (ImageProxy)
     }
 
     /**
@@ -129,6 +129,21 @@ public class FrameProccesor {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hashBytes = digest.digest(input.getBytes());
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private String generateHash(byte[] input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(input);
             StringBuilder hexString = new StringBuilder();
             for (byte b : hashBytes) {
                 hexString.append(String.format("%02x", b));
