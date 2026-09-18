@@ -516,4 +516,4 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
         // Frame processing is handled by FrameProccesor's processFrame method
         frameProccesor.processFrame(image);
     }
-}
+} 
