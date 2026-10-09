@@ -16,6 +16,7 @@ import android.os.Bundle;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
+import android.util.Log;
 import android.view.View;
 import android.widget.ImageButton;
 import android.widget.Button;
@@ -234,18 +235,16 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
     }
 
     private Response sendAuthenticatedRequest(String url, String jsonBody) throws IOException {
-        if (idToken == null) {
-            throw new IOException("No ID token available. Please sign in first.");
-        }
         OkHttpClient client = new OkHttpClient();
         MediaType JSON = MediaType.parse("application/json; charset=utf-8");
         RequestBody body = jsonBody != null ? RequestBody.create(jsonBody, JSON) : RequestBody.create(new byte[0], null);
-        Request request = new Request.Builder()
+        Request.Builder requestBuilder = new Request.Builder()
                 .url(url)
-                .addHeader("Authorization", "Bearer " + idToken)
-                .post(body)
-                .build();
-        return client.newCall(request).execute();
+                .post(body);
+        if (idToken != null) {
+            requestBuilder.addHeader("Authorization", "Bearer " + idToken);
+        }
+        return client.newCall(requestBuilder.build()).execute();
     }
 
     private Response sendAuthenticatedGet(String url) throws IOException {
@@ -541,6 +540,7 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
             if (hasAudioPermission) {
                 pendingRecording = pendingRecording.withAudioEnabled();
             }
+            final String videoHashToUpdate = targetQrHash;
             Recording newRecording = pendingRecording
                     .start(ContextCompat.getMainExecutor(this), videoRecordEvent -> {
                         if (videoRecordEvent instanceof VideoRecordEvent.Start) {
@@ -549,6 +549,7 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
                             Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
                             
                             frameProccesor.resetHashChain();
+                            updateTrustStatus(videoHashToUpdate, "recording");
                         } else if (videoRecordEvent instanceof VideoRecordEvent.Finalize) {
                             if (!((VideoRecordEvent.Finalize) videoRecordEvent).hasError()) {
                                 Uri finalUri = ((VideoRecordEvent.Finalize) videoRecordEvent).getOutputResults().getOutputUri();
@@ -557,9 +558,11 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
                                 
                                 String finalHash = frameProccesor.getCurrentHash();
                                 Toast.makeText(this, "Final hash: " + finalHash, Toast.LENGTH_LONG).show();
+                                updateTrustStatus(videoHashToUpdate, "complete");
                             } else {
                                 String msg = "Error: " + ((VideoRecordEvent.Finalize) videoRecordEvent).getError();
                                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+                                updateTrustStatus(videoHashToUpdate, "error");
                             }
                             recording = null;
                             capture.setImageResource(R.drawable.round_fiber_manual_record_24);
@@ -570,11 +573,61 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
 
         } catch (Exception e) {
             Toast.makeText(this, "Error starting video capture: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            updateTrustStatus(targetQrHash, "error");
             if (recording != null) {
                 recording.stop();
                 recording = null;
             }
         }
+    }
+
+    private void updateTrustStatus(final String hashValue, final String status) {
+        if (hashValue == null || hashValue.isEmpty()) {
+            Log.e("TrustStatus", "Cannot update trust status: hashValue is null or empty");
+            return;
+        }
+
+        final String baseUrl = getString(R.string.backend_base_url);
+        service.submit(() -> {
+            try {
+                // Primary endpoint: api/videohash/updateTrustStatus
+                String primaryEndpoint = (baseUrl.endsWith("/") ? baseUrl : baseUrl + "/")
+                        + "api/videohash/updateTrustStatus?hashValue=" + Uri.encode(hashValue)
+                        + "&trustStatus=" + Uri.encode(status)
+                        + "&status=" + Uri.encode(status);
+
+                JSONObject payload = new JSONObject();
+                payload.put("hashValue", hashValue);
+                payload.put("trustStatus", status);
+                payload.put("status", status);
+
+                try (Response resp = sendAuthenticatedRequest(primaryEndpoint, payload.toString())) {
+                    if (resp.isSuccessful()) {
+                        Log.d("TrustStatus", "Updated trust status to " + status + " for hash " + hashValue);
+                        return;
+                    }
+                    Log.w("TrustStatus", "Primary update failed (" + resp.code() + "), attempting fallback");
+                } catch (Exception e) {
+                    Log.w("TrustStatus", "Primary endpoint exception: " + e.getMessage() + ", attempting fallback");
+                }
+
+                // Fallback endpoint: api/videohash/truststatus
+                String fallbackEndpoint = (baseUrl.endsWith("/") ? baseUrl : baseUrl + "/")
+                        + "api/videohash/truststatus?hashValue=" + Uri.encode(hashValue)
+                        + "&trustStatus=" + Uri.encode(status)
+                        + "&status=" + Uri.encode(status);
+
+                try (Response resp = sendAuthenticatedRequest(fallbackEndpoint, payload.toString())) {
+                    if (resp.isSuccessful()) {
+                        Log.d("TrustStatus", "Updated trust status (fallback) to " + status + " for hash " + hashValue);
+                    } else {
+                        Log.e("TrustStatus", "Failed to update trust status: " + resp.code());
+                    }
+                }
+            } catch (Exception e) {
+                Log.e("TrustStatus", "Error updating trust status: " + e.getMessage(), e);
+            }
+        });
     }
 
     private JSONObject buildVideoHashPayload(String videoId) throws JSONException {
