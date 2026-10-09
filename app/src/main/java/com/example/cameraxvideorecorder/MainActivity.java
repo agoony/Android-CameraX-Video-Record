@@ -96,7 +96,7 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
     Recording recording = null;
     VideoCapture<Recorder> videoCapture = null;
     ImageButton capture, toggleFlash, flipCamera;
-    Button btnSignIn, btnCallBackend, btnLoginDevice;
+    Button btnSignIn, btnCallBackend, btnLoginDevice, btnBrowseVideos;
     PreviewView previewView;
 
     private MediaRecorder mediaRecorder;
@@ -160,6 +160,11 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
         
         // Initialize the frame processor with our hash processing
         frameProccesor.setFrameProcessor(this);
+        frameProccesor.setOnImageHashGeneratedListener((chainedHash, frameNumber) -> {
+            if (targetQrHash != null) {
+                sendAddImageHashRequest(targetQrHash, chainedHash, frameNumber);
+            }
+        });
 
         capture.setOnClickListener(view -> {
             if (!checkPermissions()) {
@@ -199,6 +204,11 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
         btnSignIn.setOnClickListener(v -> startGoogleSignIn());
         btnCallBackend.setOnClickListener(v -> testCallBackend());
         btnLoginDevice.setOnClickListener(v -> loginDevice());
+        btnBrowseVideos = findViewById(R.id.btnBrowseVideos);
+        btnBrowseVideos.setOnClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, VideoListActivity.class);
+            startActivity(intent);
+        });
     }
 
     private void setupGoogleSignIn() {
@@ -630,11 +640,70 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
         });
     }
 
+    private void sendAddImageHashRequest(final String videoHash, final String imageHash, final long frameNumber) {
+        if (videoHash == null || videoHash.isEmpty() || imageHash == null || imageHash.isEmpty()) {
+            return;
+        }
+
+        final String baseUrl = getString(R.string.backend_base_url);
+        service.submit(() -> {
+            try {
+                // Primary endpoint: api/videohash/addImageHash
+                String primaryUrl = (baseUrl.endsWith("/") ? baseUrl : baseUrl + "/")
+                        + "api/videohash/addImageHash?hashValue=" + Uri.encode(videoHash)
+                        + "&imageHash=" + Uri.encode(imageHash)
+                        + "&hash=" + Uri.encode(imageHash)
+                        + "&startingFrame=" + frameNumber
+                        + "&startFrame=" + frameNumber
+                        + "&frameNumber=" + frameNumber;
+
+                JSONObject payload = new JSONObject();
+                payload.put("hashValue", videoHash);
+                payload.put("imageHash", imageHash);
+                payload.put("hash", imageHash);
+                payload.put("startingFrame", frameNumber);
+                payload.put("startFrame", frameNumber);
+                payload.put("frameNumber", frameNumber);
+                payload.put("firstFrame", frameNumber);
+
+                try (Response resp = sendAuthenticatedRequest(primaryUrl, payload.toString())) {
+                    if (resp.isSuccessful()) {
+                        Log.d("AddImageHash", "Successfully added image hash: " + imageHash + " at frame " + frameNumber + " for video: " + videoHash);
+                        return;
+                    }
+                    Log.w("AddImageHash", "Primary addImageHash failed (" + resp.code() + "), attempting fallback");
+                } catch (Exception e) {
+                    Log.w("AddImageHash", "Primary addImageHash exception: " + e.getMessage() + ", attempting fallback");
+                }
+
+                // Fallback endpoint: api/videohash/imagehash
+                String fallbackUrl = (baseUrl.endsWith("/") ? baseUrl : baseUrl + "/")
+                        + "api/videohash/imagehash?hashValue=" + Uri.encode(videoHash)
+                        + "&imageHash=" + Uri.encode(imageHash)
+                        + "&startingFrame=" + frameNumber
+                        + "&startFrame=" + frameNumber
+                        + "&frameNumber=" + frameNumber;
+
+                try (Response resp = sendAuthenticatedRequest(fallbackUrl, payload.toString())) {
+                    if (resp.isSuccessful()) {
+                        Log.d("AddImageHash", "Successfully added image hash (fallback): " + imageHash + " at frame " + frameNumber);
+                    } else {
+                        Log.e("AddImageHash", "Failed to add image hash: " + resp.code());
+                    }
+                }
+            } catch (Exception e) {
+                Log.e("AddImageHash", "Error adding image hash: " + e.getMessage(), e);
+            }
+        });
+    }
+
     private JSONObject buildVideoHashPayload(String videoId) throws JSONException {
         JSONObject o = new JSONObject();
         o.put("id", UUID.randomUUID().toString());
         o.put("videoId", videoId);
         o.put("imageHashes", new JSONArray());
+        o.put("startFrame", 13);
+        o.put("startingFrame", 13);
         
         String deviceId = prefs.getString("deviceId", null);
         if (deviceId == null) {

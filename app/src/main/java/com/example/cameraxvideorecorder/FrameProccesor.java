@@ -36,7 +36,17 @@ public class FrameProccesor {
 
     // Variables para el hash encadenado
     private String currentHash = "hardcoded_initial_hash"; // Hardcoded initial hash
-    private int frameCounter = 0;
+    private long frameCounter = 0L;
+
+    public interface OnImageHashGeneratedListener {
+        void onImageHashGenerated(String chainedHash, long frameNumber);
+    }
+
+    private OnImageHashGeneratedListener onImageHashGeneratedListener;
+
+    public void setOnImageHashGeneratedListener(OnImageHashGeneratedListener listener) {
+        this.onImageHashGeneratedListener = listener;
+    }
 
     /**
      * Constructor de la clase.
@@ -101,8 +111,8 @@ public class FrameProccesor {
         // Incrementar contador de frames
         frameCounter++;
 
-        // Cada 5 frames, generar nuevo hash
-        if (frameCounter % 5 == 0) {
+        // Cada 13 frames, generar nuevo hash
+        if (frameCounter % 13 == 0) {
             // Generar hash del frame actual (bytes crudos)
             String frameHash = generateHash(frameData);
 
@@ -114,6 +124,10 @@ public class FrameProccesor {
 
             // Log para debugging
             Log.d("FrameHash", "Frame " + frameCounter + ": " + chainedHash);
+
+            if (onImageHashGeneratedListener != null) {
+                onImageHashGeneratedListener.onImageHashGenerated(chainedHash, frameCounter);
+            }
         }
 
         // No cerrar aquí; el ciclo de vida del Image lo maneja quien lo obtuvo (ImageProxy)
@@ -169,7 +183,7 @@ public class FrameProccesor {
      */
     public void resetHashChain() {
         currentHash = "hardcoded_initial_hash";
-        frameCounter = 0;
+        frameCounter = 0L;
     }
 
     /**
@@ -250,7 +264,7 @@ public class FrameProccesor {
      *
      * @param frameProcessor Procesador de frames.
      */
-    public void setFrameProcessor(FrameProccesor.FrameProcessor frameProcessor) {
+    public void setFrameProcessor(FrameProcessor frameProcessor) {
     }
 
     /**

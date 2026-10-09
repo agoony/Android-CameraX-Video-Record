@@ -75,4 +75,15 @@
         android:backgroundTint="#FFFFFF"
         android:textColor="#000000"/>
 
+    <Button
+        android:id="@+id/btnBrowseVideos"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Browse Videos"
+        android:layout_below="@id/btnLoginDevice"
+        android:layout_alignStart="@id/btnLoginDevice"
+        android:layout_marginTop="8dp"
+        android:backgroundTint="#FFFFFF"
+        android:textColor="#000000"/>
+
 </RelativeLayout>
