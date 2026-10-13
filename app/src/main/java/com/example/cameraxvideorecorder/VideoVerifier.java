@@ -2,6 +2,8 @@ package com.example.cameraxvideorecorder;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.util.Log;
@@ -58,29 +60,38 @@ public class VideoVerifier {
 
         executor.submit(() -> {
             try {
+                Log.i(TAG, "[Verification Started] Video: " + item.getName() + " (URI: " + item.getUri() + ")");
+
                 // Step 1: Scan initial QR code from video frames
                 String qrHash = scanInitialQrCode(context, item.getUri());
                 if (qrHash == null) {
+                    Log.e(TAG, "[Verification Failed] Could not detect initial QR code in video.");
                     item.setStatus(VideoItem.VerificationStatus.ERROR);
                     item.setStatusMessage("Error: Could not detect initial QR code in video.");
                     callback.onVerificationComplete(item);
                     return;
                 }
                 item.setQrHash(qrHash);
+                Log.i(TAG, "[Verification Step 1] Initial QR Hash: " + qrHash);
 
                 // Step 2: Fetch server last hash and starting frame
                 item.setStatusMessage("Fetching last registered hash and starting frame from server...");
                 ServerHashInfo serverInfo = fetchServerInfo(baseUrl, idToken, qrHash);
                 String serverLastHash = serverInfo.getLastHash();
                 item.setServerLastHash(serverLastHash);
+                Log.i(TAG, "[Verification Step 2] Server Info -> Starting Frame: " + serverInfo.getStartingFrame() + ", Server Last Hash: " + serverLastHash);
 
                 // Step 3: Recalculate chained hash starting from backend startingFrame
                 item.setStatusMessage("Recalculating chained hashes starting from frame " + serverInfo.getStartingFrame() + "...");
                 String calculatedHash = recalculateChainedHash(context, item.getUri(), serverInfo.getStartingFrame());
                 item.setCalculatedHash(calculatedHash);
+                Log.i(TAG, "[Verification Step 3] Recalculated Final Hash: " + calculatedHash);
 
                 // Step 4: Compare calculated hash with server hash
-                if (serverLastHash != null && calculatedHash != null && calculatedHash.equalsIgnoreCase(serverLastHash)) {
+                boolean isMatch = serverLastHash != null && calculatedHash != null && calculatedHash.equalsIgnoreCase(serverLastHash);
+                Log.i(TAG, "[Verification Step 4] Result -> Match: " + isMatch + " | Calculated: " + calculatedHash + " | Server: " + serverLastHash);
+
+                if (isMatch) {
                     item.setStatus(VideoItem.VerificationStatus.VALID);
                     item.setStatusMessage("VALID - Video is authentic and has not been modified.");
                 } else {
@@ -89,7 +100,7 @@ public class VideoVerifier {
                 }
 
             } catch (Exception e) {
-                Log.e(TAG, "Error during video verification", e);
+                Log.e(TAG, "[Verification Error] Exception during video verification", e);
                 item.setStatus(VideoItem.VerificationStatus.ERROR);
                 item.setStatusMessage("Verification error: " + e.getMessage());
             }
@@ -113,6 +124,7 @@ public class VideoVerifier {
                         for (Barcode barcode : barcodes) {
                             String rawValue = barcode.getRawValue();
                             if (rawValue != null && !rawValue.isEmpty()) {
+                                Log.i(TAG, "[QR Scan Success] Detected initial QR Hash: " + rawValue + " (at " + (timeUs / 1000) + " ms)");
                                 return rawValue;
                             }
                         }
@@ -139,34 +151,81 @@ public class VideoVerifier {
 
     public static String recalculateChainedHash(Context context, Uri videoUri, long startingFrame) {
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        MediaExtractor extractor = new MediaExtractor();
         String currentHash = "hardcoded_initial_hash";
         try {
             retriever.setDataSource(context, videoUri);
-            String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            long durationMs = durationStr != null ? Long.parseLong(durationStr) : 0;
+            extractor.setDataSource(context, videoUri, null);
 
-            long frameIntervalUs = 33000; // Sampling video at ~30 FPS (33ms per frame)
-            long frameCounter = startingFrame;
-            long startTimeUs = startingFrame * frameIntervalUs;
+            int videoTrackIndex = -1;
+            for (int i = 0; i < extractor.getTrackCount(); i++) {
+                MediaFormat format = extractor.getTrackFormat(i);
+                String mime = format.getString(MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) {
+                    videoTrackIndex = i;
+                    break;
+                }
+            }
 
-            for (long timeUs = startTimeUs; timeUs < durationMs * 1000; timeUs += frameIntervalUs) {
-                frameCounter++;
-                if (frameCounter % 13 == 0) {
-                    Bitmap frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST);
-                    if (frame != null) {
-                        ByteBuffer buffer = ByteBuffer.allocate(frame.getByteCount());
-                        frame.copyPixelsToBuffer(buffer);
-                        byte[] frameData = buffer.array();
+            if (videoTrackIndex != -1) {
+                extractor.selectTrack(videoTrackIndex);
+                long frameCounter = -1;
 
-                        String frameHash = sha256(frameData);
-                        currentHash = sha256(currentHash + frameHash);
-                        frame.recycle();
+                Log.i(TAG, "[Hash Calculation] Using MediaExtractor for 29.970 FPS frame sample alignment. Starting frame: " + startingFrame);
+
+                while (extractor.getSampleTime() != -1) {
+                    frameCounter++;
+                    long sampleTimeUs = extractor.getSampleTime();
+
+                    if (frameCounter % 13 == 0) {
+                        Bitmap frame = retriever.getFrameAtTime(sampleTimeUs, MediaMetadataRetriever.OPTION_CLOSEST);
+                        if (frame != null) {
+                            ByteBuffer buffer = ByteBuffer.allocate(frame.getByteCount());
+                            frame.copyPixelsToBuffer(buffer);
+                            byte[] frameData = buffer.array();
+
+                            String frameHash = sha256(frameData);
+                            currentHash = sha256(currentHash + frameHash);
+
+                            Log.d(TAG, "[Verification Hash] Frame #" + frameCounter + " (sampleTimeUs: " + sampleTimeUs + "us) -> Frame Hash: " + frameHash + " | Chained Hash: " + currentHash);
+
+                            frame.recycle();
+                        }
+                    }
+                    extractor.advance();
+                }
+                Log.i(TAG, "[Hash Calculation Complete] Total Frames Processed: " + frameCounter + " | Final Hash: " + currentHash);
+            } else {
+                Log.w(TAG, "No video track found in extractor, falling back to time-based sampling at 29.97 FPS");
+                double frameIntervalUs = 1000000.0 / 29.97002997; // ~33366.67 us
+                String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                long durationMs = durationStr != null ? Long.parseLong(durationStr) : 0;
+                long frameCounter = startingFrame;
+
+                for (double timeUs = startingFrame * frameIntervalUs; timeUs < durationMs * 1000; timeUs += frameIntervalUs) {
+                    frameCounter++;
+                    if (frameCounter % 13 == 0) {
+                        Bitmap frame = retriever.getFrameAtTime((long) timeUs, MediaMetadataRetriever.OPTION_CLOSEST);
+                        if (frame != null) {
+                            ByteBuffer buffer = ByteBuffer.allocate(frame.getByteCount());
+                            frame.copyPixelsToBuffer(buffer);
+                            byte[] frameData = buffer.array();
+
+                            String frameHash = sha256(frameData);
+                            currentHash = sha256(currentHash + frameHash);
+                            Log.d(TAG, "[Verification Hash Fallback] Frame #" + frameCounter + " -> Chained Hash: " + currentHash);
+                            frame.recycle();
+                        }
                     }
                 }
             }
+
         } catch (Exception e) {
             Log.e(TAG, "Error recalculating chained hash", e);
         } finally {
+            try {
+                extractor.release();
+            } catch (Exception ignored) {}
             try {
                 retriever.release();
             } catch (Exception ignored) {}
@@ -187,6 +246,7 @@ public class VideoVerifier {
         try (Response resp = client.newCall(builder.build()).execute()) {
             if (resp.isSuccessful() && resp.body() != null) {
                 String body = resp.body().string();
+                Log.d(TAG, "[Server Response] Endpoint: " + primaryUrl + " -> Body: " + body);
                 return parseServerHashInfo(body);
             }
         } catch (Exception ignored) {}
@@ -202,6 +262,7 @@ public class VideoVerifier {
         try (Response resp = client.newCall(fbBuilder.build()).execute()) {
             if (resp.isSuccessful() && resp.body() != null) {
                 String body = resp.body().string();
+                Log.d(TAG, "[Server Response Fallback] Endpoint: " + fallbackUrl + " -> Body: " + body);
                 return parseServerHashInfo(body);
             }
         }

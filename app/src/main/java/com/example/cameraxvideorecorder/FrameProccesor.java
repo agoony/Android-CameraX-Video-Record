@@ -123,7 +123,7 @@ public class FrameProccesor {
             currentHash = chainedHash;
 
             // Log para debugging
-            Log.d("FrameHash", "Frame " + frameCounter + ": " + chainedHash);
+            Log.d("FrameProcessor", "[Recording Hash] Frame #" + frameCounter + " -> Frame Hash: " + frameHash + " | Chained Hash: " + chainedHash);
 
             if (onImageHashGeneratedListener != null) {
                 onImageHashGeneratedListener.onImageHashGenerated(chainedHash, frameCounter);
@@ -184,6 +184,7 @@ public class FrameProccesor {
     public void resetHashChain() {
         currentHash = "hardcoded_initial_hash";
         frameCounter = 0L;
+        Log.i("FrameProcessor", "[Recording Reset] Hash chain reset to initial hash: " + currentHash);
     }
 
     /**

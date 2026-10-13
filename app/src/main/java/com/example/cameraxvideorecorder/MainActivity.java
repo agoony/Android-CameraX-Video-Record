@@ -8,6 +8,8 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.location.Location;
+import android.location.LocationManager;
 import android.media.Image;
 import android.net.Uri;
 import android.os.BatteryManager;
@@ -76,6 +78,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -557,6 +560,7 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
                             capture.setEnabled(true);
                             capture.setImageResource(R.drawable.round_stop_circle_24);
                             Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
+                            Log.i("MainActivity", "[Recording Start] Video: " + name + " | Initial Hash: " + videoHashToUpdate);
                             
                             frameProccesor.resetHashChain();
                             updateTrustStatus(videoHashToUpdate, "recording");
@@ -568,10 +572,12 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
                                 
                                 String finalHash = frameProccesor.getCurrentHash();
                                 Toast.makeText(this, "Final hash: " + finalHash, Toast.LENGTH_LONG).show();
+                                Log.i("MainActivity", "[Recording Complete] Final Chained Hash: " + finalHash + " | URI: " + finalUri);
                                 updateTrustStatus(videoHashToUpdate, "complete");
                             } else {
                                 String msg = "Error: " + ((VideoRecordEvent.Finalize) videoRecordEvent).getError();
                                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+                                Log.e("MainActivity", "[Recording Error] Event error: " + msg);
                                 updateTrustStatus(videoHashToUpdate, "error");
                             }
                             recording = null;
@@ -725,8 +731,9 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
         o.put("ipAddress", getIpAddress());
         o.put("batteryLevel", getBatteryLevel());
         o.put("locale", Locale.getDefault().toString());
-        o.put("latitude", 0.0);
-        o.put("longitude", 0.0);
+        double[] location = getLastKnownLocation();
+        o.put("latitude", location[0]);
+        o.put("longitude", location[1]);
 
         String payloadJson = o.toString();
         String hashValue = sha256(payloadJson);
@@ -794,10 +801,44 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
         }
     }
 
+    private double[] getLastKnownLocation() {
+        double[] latLng = new double[]{0.0, 0.0};
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                
+                LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+                if (lm != null) {
+                    List<String> providers = lm.getProviders(true);
+                    Location bestLocation = null;
+                    for (String provider : providers) {
+                        @SuppressLint("MissingPermission")
+                        Location l = lm.getLastKnownLocation(provider);
+                        if (l != null) {
+                            if (bestLocation == null || l.getAccuracy() < bestLocation.getAccuracy()) {
+                                bestLocation = l;
+                            }
+                        }
+                    }
+                    if (bestLocation != null) {
+                        latLng[0] = bestLocation.getLatitude();
+                        latLng[1] = bestLocation.getLongitude();
+                        Log.d("Location", "Retrieved GPS coordinates: lat=" + latLng[0] + ", lng=" + latLng[1]);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e("Location", "Error getting GPS location: " + e.getMessage());
+        }
+        return latLng;
+    }
+
     private boolean checkPermissions() {
         String[] permissions = {
                 Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
         };
         for (String permission : permissions) {
             if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
@@ -810,7 +851,9 @@ public class MainActivity extends AppCompatActivity implements FrameProccesor.Fr
     private void requestPermissions() {
         String[] permissions = new String[]{
                 Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
         };
         activityResultLauncher.launch(permissions);
     }
